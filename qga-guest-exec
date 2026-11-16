@@ -1,0 +1,325 @@
+#!/bin/sh
+#
+# Copyright (c) 2026, Jesús Daniel Colmenares Oviedo <dtxdf@disroot.org>
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+#
+# * Neither the name of the copyright holder nor the names of its
+#   contributors may be used to endorse or promote products derived from
+#   this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+set -o pipefail
+
+export LC_ALL=C
+
+SOCKET=
+TIMEOUT="1"
+INTERVAL="0.5"
+WAIT="30"
+VERSION="%%VERSION%%"
+
+main()
+{
+    local _o
+    local async=false
+    local quiet=false
+    local pid=
+    local program=
+
+    while getopts ":aqvp:w:" _o; do
+        case "${_o}" in
+            a)
+                async=true
+                ;;
+            q)
+                quiet=true
+                ;;
+            v)
+                version
+                exit 0
+                ;;
+            p)
+                pid="${OPTARG}"
+
+                if ! check_number "${pid}" || [ ${pid} -eq 0 ]; then
+                    err "${pid}: invalid PID."
+                    exit 1
+                fi
+                ;;
+            w)
+                WAIT="${OPTARG}"
+
+                if ! check_number "${WAIT}"; then
+                    err "${WAIT}: invalid number."
+                    exit 1
+                fi
+
+                if [ ${WAIT} -gt 86400 ]; then
+                    err "${WAIT}: number too long."
+                    exit 1
+                fi
+                ;;
+            *)
+                usage
+                exit 1
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    SOCKET="$1"
+
+    if [ -z "${SOCKET}" ]; then
+        usage
+        exit 1
+    fi
+
+    shift
+
+    if [ ! -S "${SOCKET}" ]; then
+        err "${SOCKET}: not a socket."
+        exit 1
+    fi
+
+    local capture_output=true
+
+    if ${quiet}; then
+        capture_output=false
+    fi
+
+    if [ -n "${pid}" ] && ${async}; then
+        usage
+        exit 1
+    fi
+
+    if [ -n "${pid}" ] && [ $# -gt 0 ]; then
+        usage
+        exit 1
+    fi
+
+    if [ -z "${pid}" ]; then
+        if [ $# -eq 0 ]; then
+            usage
+            exit 1
+        fi
+
+        program="$1"
+
+        if [ -z "${program}" ]; then
+            usage
+            exit 1
+        fi
+
+        shift
+
+        local guest_exec_arguments
+        guest_exec_arguments=`echo {} | jq -rnc --argjson capture_output "${capture_output}" --arg "path" "${program}" '.path = $path | .arg = $ARGS.positional | .["capture-output"] = $capture_output' --args -- "$@"` || exit 1
+
+        local reply
+        reply=`send_request "{\"execute\": \"guest-exec\", \"arguments\": ${guest_exec_arguments}}"` || exit $?
+
+        pid=`printf "%s" "${reply}" | jq -r '.["return"] | .["pid"]'` || exit 1
+
+        if [ -z "${pid}" ] || ! check_number "${pid}"; then
+            err "failed to obtain pid from guest-exec response"
+            exit 1
+        fi
+    fi
+
+    if ${async}; then
+        printf "%s\n" "${pid}"
+        exit 0
+    fi
+
+    local status
+
+    local deadline=0
+
+    if [ "${WAIT}" -gt 0 ]; then
+        deadline=$((`date +%s` + ${WAIT})) || exit 1
+    fi
+
+    while :; do
+        if [ ${deadline} -gt 0 ]; then
+            local current
+            current=`date +%s` || exit 1
+
+            if [ ${current} -ge ${deadline} ]; then
+                err "timeout (${WAIT}s) waiting for guest process ${pid} to exit"
+                exit 6
+            fi
+        fi
+
+        status=`send_request "{\"execute\": \"guest-exec-status\", \"arguments\": {\"pid\": ${pid}}}"` || exit $?
+
+        local exited
+        exited=`printf "%s" "${status}" | jq -r '.["return"]["exited"]'` || {
+            err "failed to parse guest-exec-status response"
+            exit 1
+        }
+
+        if [ "${exited}" = "true" ]; then
+            break
+        fi
+
+        sleep "${INTERVAL}" || exit 1
+    done
+
+    local guest_exit
+    guest_exit=`printf "%s" "${status}" | jq -r '.["return"]["exitcode"]'` || exit 1
+
+    local rc
+
+    if [ "${guest_exit}" = "null" ]; then
+        local signal
+        signal=`printf "%s" "${status}" | jq -r '.["return"]["signal"] // empty'`
+
+        if [ -n "${signal}" ]; then
+            warn "guest process terminated by signal ${signal}"
+        else
+            warn "failed to obtain exit status from guest-exec-status response"
+        fi
+
+        rc=128
+    elif [ "${guest_exit}" -ne 0 ]; then
+        rc=127
+    else
+        rc=0
+    fi
+
+    local stdout_b64
+    stdout_b64=`printf "%s" "${status}" | jq -r '.["return"]["out-data"] // empty'` || exit 1
+
+    local stderr_b64
+    stderr_b64=`printf "%s" "${status}" | jq -r '.["return"]["err-data"] // empty' 2> /dev/null`
+
+    if [ -n "${stdout_b64}" ]; then
+        printf "%s" "${stdout_b64}" | base64 -d || {
+            err "failed to decode guest stdout"
+            exit 1
+        }
+    fi
+
+    if [ -n "${stderr_b64}" ]; then
+        if ! printf "%s" "${stderr_b64}" | base64 -d >&2; then
+            warn "failed to decode guest stderr"
+        fi
+    fi
+
+    exit ${rc}
+}
+
+version()
+{
+    echo "${VERSION}"
+}
+
+check_number()
+{
+    printf "%s\n" "$1" | grep -qEe "^(0|[1-9][0-9]*)$"
+}
+
+err()
+{
+    printf "###> %s\n" "$*" >&2
+}
+
+warn()
+{
+    printf "##!> %s\n" "$*" >&2
+}
+
+_send_request()
+{
+    local request
+
+    {
+        for request; do
+            printf "%s\n" "${request}"
+        done
+    } | timeout "${TIMEOUT}" nc -U "${SOCKET}" | while IFS= read -r _line; do
+        printf "%s\n" "${_line}"
+    done
+}
+
+send_request()
+{
+    local session_id
+    session_id=`jot -r 1 1000000000` || exit 1
+
+    local reply
+    reply=`_send_request \
+        "{\"execute\": \"guest-sync-delimited\", \"arguments\": {\"id\": ${session_id}}}" \
+        "$1"`
+
+    if [ `printf "%s" "${reply}" | tr -dc '\377' | wc -c` -eq 0 ]; then
+        err "no sync delimiter received from guest agent (socket: ${SOCKET})"
+        exit 2
+    fi
+
+    reply=`printf "%s" "${reply}" | tr -d '\377'` || exit 1
+
+    if [ `printf "%s\n" "${reply}" | wc -l` -ne 2 ]; then
+        err "unexpected response from guest agent: expected 2 lines, got $(printf "%s\n" "${reply}" | wc -l | tr -d ' ')"
+        exit 3
+    fi
+
+    local synced=false
+
+    local sync_line
+    sync_line=`printf "%s\n" "${reply}" | sed -n 1p` || exit 1
+
+    case "${sync_line}" in
+        *'"return":'"${session_id}"'}'*|*'"return": '"${session_id}"'}'*) synced=true ;;
+    esac
+
+    if ! ${synced}; then
+        err "guest-sync id mismatch: expected ${session_id}"
+        exit 5
+    fi
+
+    local output
+    output=`printf "%s\n" "${reply}" | sed -n 2p`
+
+    local has_error
+    has_error=`printf "%s" "${output}" | jq 'has("error")'` || exit 1
+
+    if [ "${has_error}" = "true" ]; then
+        printf "%s" "${output}" | jq -r '.error.desc // "Unknown error."' >&2
+        exit 4
+    fi
+
+    printf "%s\n" "${output}"
+}
+
+usage()
+{
+    cat << EOF
+usage: qga-guest-exec [-q] [-w <wait>] <socket> <program> [<args> ...]
+       qga-guest-exec [-q] -a <socket> <program> [<args> ...]
+       qga-guest-exec [-w <wait>] -p <pid> <socket>
+       qga-guest-exec -v
+EOF
+}
+
+main "$@"

@@ -1,0 +1,222 @@
+.\"Copyright (c) 2024, Jesús Daniel Colmenares Oviedo <DtxdF@disroot.org>
+.\"All rights reserved.
+.\"
+.\"Redistribution and use in source and binary forms, with or without
+.\"modification, are permitted provided that the following conditions are met:
+.\"
+.\"* Redistributions of source code must retain the above copyright notice, this
+.\"  list of conditions and the following disclaimer.
+.\"
+.\"* Redistributions in binary form must reproduce the above copyright notice,
+.\"  this list of conditions and the following disclaimer in the documentation
+.\"  and/or other materials provided with the distribution.
+.\"
+.\"* Neither the name of the copyright holder nor the names of its
+.\"  contributors may be used to endorse or promote products derived from
+.\"  this software without specific prior written permission.
+.\"
+.\"THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+.\"AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\"IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+.\"DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+.\"FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\"DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+.\"SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+.\"CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+.\"OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+.\"OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+.Dd November 16, 2026
+.Dt QGA-GUEST-EXEC 1
+.Os
+.Sh NAME
+.Nm qga-guest-exec
+.Nd execute commands in a QEMU guest via the guest agent
+.Sh SYNOPSIS
+.Nm
+.Op Fl q
+.Op Fl w Ar wait
+.Ar socket
+.Ar program
+.Op Ar args ...
+.Nm
+.Op Fl q
+.Fl a
+.Ar socket
+.Ar program
+.Op Ar args ...
+.Nm
+.Op Fl w Ar wait
+.Fl p Ar pid
+.Ar socket
+.Nm
+.Fl v
+.Sh DESCRIPTION
+The
+.Nm
+utility connects to the QEMU guest agent socket at
+.Ar socket
+and asks the agent to execute
+.Ar program
+inside the guest.
+The agent returns a process identifier immediately; the
+.Dq guest-exec
+operation is asynchronous by design.
+.Nm
+then polls the
+.Dq guest-exec-status
+command until the process exits or the timeout is reached.
+If output capture is enabled (the default), the standard output and
+standard error produced by the guest process are decoded from base64
+and written to the corresponding streams of
+.Nm .
+.Pp
+The
+.Ar socket
+argument is mandatory and must be a path to a Unix domain socket
+owned by the guest agent, as created, for example, by
+.Xr bhyve 8
+when the
+.Dq org.qemu.guest_agent.0
+virtio-console port is configured.
+.Nm
+verifies that the path exists and is a socket before contacting the
+agent.
+.Pp
+Before each command,
+.Nm
+issues a
+.Dq guest-sync-delimited
+request with a random identifier and verifies the response.
+This protects against stale or interleaved replies on the socket.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a
+Launch
+.Ar program
+in the guest and print the guest process identifier on standard output.
+Exit immediately after the identifier is printed.
+This option cannot be combined with
+.Fl p .
+.It Fl q
+Disable output capture in the guest.
+The agent will not collect standard output or standard error, and
+.Nm
+will produce no guest output.
+When used together with
+.Fl a ,
+this determines whether a later
+.Fl p
+invocation can retrieve output for the process.
+When used together with
+.Fl p ,
+this option has no effect, because capture was decided when the process
+was originally launched.
+.It Fl p Ar pid
+Resume polling an existing guest process previously launched with
+.Fl a .
+No new command is started, and
+.Ar program
+must not be given.
+The value
+.Ar pid
+must be a positive decimal integer.
+This option cannot be combined with
+.Fl a .
+.It Fl w Ar wait
+Set the maximum number of seconds to wait for the guest process to
+exit.
+The default is 30 seconds.
+A value of 0 disables the deadline, causing
+.Nm
+to wait indefinitely.
+The maximum accepted value is 86400 (one day).
+This option has no effect when used together with
+.Fl a ,
+because
+.Nm
+returns before entering the polling loop.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 0
+The guest process exited with status 0, or
+.Fl a
+was used and the identifier was printed successfully.
+.It 1
+Usage error, invalid option argument, an internal failure
+(such as a malformed response that
+.Xr jq 1
+could not parse), or
+.Ar socket
+does not exist or is not a Unix domain socket.
+.It 2
+No sync delimiter was received from the guest agent.
+This usually indicates that the socket is not connected to a live
+agent.
+.It 3
+The guest agent response did not consist of the expected two lines.
+.It 4
+The guest agent returned an error.
+The error description is printed on standard error.
+.It 5
+The
+.Dq guest-sync
+identifier in the response did not match the identifier that was sent.
+.It 6
+The timeout specified with
+.Fl w
+expired before the guest process exited.
+.It 127
+The guest process exited with a non-zero status.
+The exact status is not propagated.
+.It 128
+The guest process was terminated by a signal, or the exit status could
+not be determined.
+.El
+.Sh SEE ALSO
+.Xr jq 1 ,
+.Xr nc 1 ,
+.Xr qemu-ga 8
+.Sh AUTHORS
+.An Jesús Daniel Colmenares Oviedo Aq Mt DtxdF@disroot.org
+.Sh CAVEATS
+The
+.Dq merged
+value for the
+.Va capture-output
+argument of
+.Dq guest-exec
+is not supported by Windows guests.
+Consequently,
+.Nm
+always requests separate stdout and stderr capture and writes each
+stream to the corresponding local stream.
+The relative ordering of lines from the two streams is therefore
+not preserved.
+.Pp
+The socket used by the guest agent may remain open even when no agent
+is listening.
+.Nm
+relies on a short connection timeout for each request and on the
+.Dq guest-sync-delimited
+handshake to detect a dead or unresponsive agent.
+.Pp
+The exit status of the guest process is collapsed to 127 for any
+non-zero value.
+Scripts that need the exact status should query
+.Dq guest-exec-status
+directly.
+.Sh BUGS
+With
+.Fl w Ar 0
+there is no upper bound on the number of status polls.
+If the agent returns a response without the
+.Va exited
+field, or with
+.Va exited
+set to
+.Dv null ,
+.Nm
+will loop indefinitely.
+Use a non-zero timeout to avoid this situation.
