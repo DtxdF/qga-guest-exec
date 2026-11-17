@@ -2,9 +2,9 @@ NAME
      qga-guest-exec - execute commands in a guest via the guest agent protocol
 
 SYNOPSIS
-     qga-guest-exec [-q] [-w wait] socket program [args ...]
-     qga-guest-exec [-q] -a socket program [args ...]
-     qga-guest-exec [-w wait] -p pid socket
+     qga-guest-exec [-iq] [-t timeout] [-w wait] socket program [args ...]
+     qga-guest-exec [-iq] [-t timeout] -a socket program [args ...]
+     qga-guest-exec [-t timeout] [-w wait] -p pid socket
      qga-guest-exec -v
 
 DESCRIPTION
@@ -42,6 +42,15 @@ DESCRIPTION
 	     identifier on standard output.  Exit immediately after the
 	     identifier is printed.  This option cannot be combined with -p.
 
+     -i      Read data from standard input and pass it to the guest process as
+	     its standard input.  The data is read from the caller's standard
+	     input until end-of-file, encoded in base64, and sent as the
+	     input-data argument of "guest-exec".  The encoded data is limited
+	     to 1048576 bytes; if the input exceeds this limit, qga-guest-exec
+	     exits with status 1 without contacting the guest.	This option
+	     has no effect when used together with -p, because the process was
+	     already launched with a fixed input buffer.
+
      -q      Disable output capture in the guest.  The agent will not collect
 	     standard output or standard error, and qga-guest-exec will
 	     produce no guest output.  When used together with -a, this
@@ -55,6 +64,15 @@ DESCRIPTION
 	     The value pid must be a positive decimal integer.	This option
 	     cannot be combined with -a.
 
+     -t timeout
+	     Set the connection timeout, in seconds.  The default is 1 second.
+	     This is useful when the data passed with -i is large and the
+	     agent needs more time to receive and process the initial request.
+	     When qga-guest-exec launches a process (that is, when -p is not
+	     used), the connection timeout is reset to 1 second after
+	     "guest-exec" completes, because subsequent status polls are small
+	     stat requests.
+
      -w wait
 	     Set the maximum number of seconds to wait for the guest process
 	     to exit.  The default is 30 seconds.  A value of 0 disables the
@@ -67,9 +85,10 @@ EXIT STATUS
      0	     The guest process exited with status 0, or -a was used and the
 	     identifier was printed successfully.
 
-     1	     Usage error, invalid option argument, an internal failure (such
-	     as a malformed response that jq(1) could not parse), or socket
-	     does not exist or is not a Unix domain socket.
+     1	     Usage error, invalid option argument, the input passed with -i
+	     exceeds 1048576 bytes, an internal failure (such as a malformed
+	     response that jq(1) could not parse), or socket does not exist or
+	     is not a Unix domain socket.
 
      2	     No sync delimiter was received from the guest agent.  This
 	     usually indicates that the socket is not connected to a live
@@ -105,6 +124,13 @@ CAVEATS
      requests separate stdout and stderr capture and writes each stream to the
      corresponding local stream.  The relative ordering of lines from the two
      streams is therefore not preserved.
+
+     The data passed with -i is not streamed.  The guest process receives the
+     entire buffer at once and then sees end-of-file; interactive commands
+     that expect incremental input will not work through this mechanism.  For
+     large inputs, use the "guest-file-open", "guest-file-write", and
+     "guest-file-close" commands to transfer a file into the guest and
+     redirect it to the process instead.
 
      The socket used by the guest agent may remain open even when no agent is
      listening.  qga-guest-exec relies on a short connection timeout for each
