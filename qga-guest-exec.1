@@ -30,7 +30,7 @@
 .Os
 .Sh NAME
 .Nm qga-guest-exec
-.Nd execute commands in a QEMU guest via the guest agent
+.Nd execute commands in a guest via the guest agent protocol
 .Sh SYNOPSIS
 .Nm
 .Op Fl q
@@ -53,11 +53,28 @@
 .Sh DESCRIPTION
 The
 .Nm
-utility connects to the QEMU guest agent socket at
+utility connects to the guest agent socket at
 .Ar socket
 and asks the agent to execute
 .Ar program
 inside the guest.
+.Pp
+The guest agent is the software running inside the virtual machine
+that implements the QEMU Guest Agent Protocol.
+The protocol is defined by QEMU, but the agent itself is independent
+of the virtual machine monitor: the same
+.Dq guest-exec
+and
+.Dq guest-exec-status
+commands are available whenever the protocol is spoken.
+The virtual machine monitor only provides the transport, by exposing
+a virtio-serial or virtio-console port as a Unix domain socket on the
+host.
+Both
+.Xr bhyve 8
+and QEMU/KVM can do this, and so can any other VMM that forwards the
+port.
+.Pp
 The agent returns a process identifier immediately; the
 .Dq guest-exec
 operation is asynchronous by design.
@@ -73,11 +90,8 @@ and written to the corresponding streams of
 The
 .Ar socket
 argument is mandatory and must be a path to a Unix domain socket
-owned by the guest agent, as created, for example, by
-.Xr bhyve 8
-when the
-.Dq org.qemu.guest_agent.0
-virtio-console port is configured.
+created by the virtual machine monitor for the virtio-console port
+that carries the guest agent.
 .Nm
 verifies that the path exists and is a socket before contacting the
 agent.
@@ -177,7 +191,8 @@ not be determined.
 .Sh SEE ALSO
 .Xr jq 1 ,
 .Xr nc 1 ,
-.Xr qemu-ga 8
+.Xr bhyve 8 ,
+.Xr qemu-ga-ref 7
 .Sh AUTHORS
 .An Jesús Daniel Colmenares Oviedo Aq Mt DtxdF@disroot.org
 .Sh CAVEATS

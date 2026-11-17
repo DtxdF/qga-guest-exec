@@ -1,5 +1,5 @@
 NAME
-     qga-guest-exec - execute commands in a QEMU guest via the guest agent
+     qga-guest-exec - execute commands in a guest via the guest agent protocol
 
 SYNOPSIS
      qga-guest-exec [-q] [-w wait] socket program [args ...]
@@ -8,20 +8,29 @@ SYNOPSIS
      qga-guest-exec -v
 
 DESCRIPTION
-     The qga-guest-exec utility connects to the QEMU guest agent socket at
-     socket and asks the agent to execute program inside the guest.  The agent
-     returns a process identifier immediately; the "guest-exec" operation is
-     asynchronous by design.  qga-guest-exec then polls the
+     The qga-guest-exec utility connects to the guest agent socket at socket
+     and asks the agent to execute program inside the guest.
+
+     The guest agent is the software running inside the virtual machine that
+     implements the QEMU Guest Agent Protocol.	The protocol is defined by
+     QEMU, but the agent itself is independent of the virtual machine monitor:
+     the same "guest-exec" and "guest-exec-status" commands are available
+     whenever the protocol is spoken.  The virtual machine monitor only
+     provides the transport, by exposing a virtio-serial or virtio-console
+     port as a Unix domain socket on the host.	Both bhyve(8) and QEMU/KVM can
+     do this, and so can any other VMM that forwards the port.
+
+     The agent returns a process identifier immediately; the "guest-exec"
+     operation is asynchronous by design.  qga-guest-exec then polls the
      "guest-exec-status" command until the process exits or the timeout is
      reached.  If output capture is enabled (the default), the standard output
      and standard error produced by the guest process are decoded from base64
      and written to the corresponding streams of qga-guest-exec.
 
      The socket argument is mandatory and must be a path to a Unix domain
-     socket owned by the guest agent, as created, for example, by bhyve(8)
-     when the "org.qemu.guest_agent.0" virtio-console port is configured.
-     qga-guest-exec verifies that the path exists and is a socket before
-     contacting the agent.
+     socket created by the virtual machine monitor for the virtio-console port
+     that carries the guest agent.  qga-guest-exec verifies that the path
+     exists and is a socket before contacting the agent.
 
      Before each command, qga-guest-exec issues a "guest-sync-delimited"
      request with a random identifier and verifies the response.  This
@@ -85,7 +94,7 @@ EXIT STATUS
 	     could not be determined.
 
 SEE ALSO
-     jq(1), nc(1), qemu-ga(8)
+     jq(1), nc(1), bhyve(8), qemu-ga-ref(7)
 
 AUTHORS
      Jesus Daniel Colmenares Oviedo <DtxdF@disroot.org>
