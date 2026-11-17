@@ -33,18 +33,21 @@
 .Nd execute commands in a guest via the guest agent protocol
 .Sh SYNOPSIS
 .Nm
-.Op Fl q
+.Op Fl iq
+.Op Fl t Ar timeout
 .Op Fl w Ar wait
 .Ar socket
 .Ar program
 .Op Ar args ...
 .Nm
-.Op Fl q
+.Op Fl iq
+.Op Fl t Ar timeout
 .Fl a
 .Ar socket
 .Ar program
 .Op Ar args ...
 .Nm
+.Op Fl t Ar timeout
 .Op Fl w Ar wait
 .Fl p Ar pid
 .Ar socket
@@ -112,6 +115,21 @@ in the guest and print the guest process identifier on standard output.
 Exit immediately after the identifier is printed.
 This option cannot be combined with
 .Fl p .
+.It Fl i
+Read data from standard input and pass it to the guest process as its
+standard input.
+The data is read from the caller's standard input until end-of-file,
+encoded in base64, and sent as the
+.Va input-data
+argument of
+.Dq guest-exec .
+The encoded data is limited to 1048576 bytes; if the input exceeds
+this limit,
+.Nm
+exits with status 1 without contacting the guest.
+This option has no effect when used together with
+.Fl p ,
+because the process was already launched with a fixed input buffer.
 .It Fl q
 Disable output capture in the guest.
 The agent will not collect standard output or standard error, and
@@ -137,6 +155,20 @@ The value
 must be a positive decimal integer.
 This option cannot be combined with
 .Fl a .
+.It Fl t Ar timeout
+Set the connection timeout, in seconds.
+The default is 1 second.
+This is useful when the data passed with
+.Fl i
+is large and the agent needs more time to receive and process the
+initial request.
+When
+.Nm
+launches a process (that is, when
+.Fl p
+is not used), the connection timeout is reset to 1 second after
+.Dq guest-exec
+completes, because subsequent status polls are small stat requests.
 .It Fl w Ar wait
 Set the maximum number of seconds to wait for the guest process to
 exit.
@@ -158,7 +190,9 @@ The guest process exited with status 0, or
 .Fl a
 was used and the identifier was printed successfully.
 .It 1
-Usage error, invalid option argument, an internal failure
+Usage error, invalid option argument, the input passed with
+.Fl i
+exceeds 1048576 bytes, an internal failure
 (such as a malformed response that
 .Xr jq 1
 could not parse), or
@@ -209,6 +243,20 @@ always requests separate stdout and stderr capture and writes each
 stream to the corresponding local stream.
 The relative ordering of lines from the two streams is therefore
 not preserved.
+.Pp
+The data passed with
+.Fl i
+is not streamed.
+The guest process receives the entire buffer at once and then sees
+end-of-file; interactive commands that expect incremental input will
+not work through this mechanism.
+For large inputs, use the
+.Dq guest-file-open ,
+.Dq guest-file-write ,
+and
+.Dq guest-file-close
+commands to transfer a file into the guest and redirect it to the
+process instead.
 .Pp
 The socket used by the guest agent may remain open even when no agent
 is listening.

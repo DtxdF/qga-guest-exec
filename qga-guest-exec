@@ -42,14 +42,18 @@ main()
 {
     local _o
     local async=false
+    local input=false
     local quiet=false
     local pid=
     local program=
 
-    while getopts ":aqvp:w:" _o; do
+    while getopts ":aiqvp:t:w:" _o; do
         case "${_o}" in
             a)
                 async=true
+                ;;
+            i)
+                input=true
                 ;;
             q)
                 quiet=true
@@ -63,6 +67,14 @@ main()
 
                 if ! check_number "${pid}" || [ ${pid} -eq 0 ]; then
                     err "${pid}: invalid PID."
+                    exit 1
+                fi
+                ;;
+            t)
+                TIMEOUT="${OPTARG}"
+
+                if ! check_number "${TIMEOUT}" || [ ${TIMEOUT} -eq 0 ]; then
+                    err "${TIMEOUT}: invalid number."
                     exit 1
                 fi
                 ;;
@@ -132,8 +144,32 @@ main()
 
         shift
 
+        local input_data=
+
+        if ${input}; then
+            input_data=`base64 | tr -d $'\n'` || {
+                err "failed to process stdin"
+                exit 1
+            }
+
+            if [ `printf "%s" "${input_data}" | wc -c` -gt 1048576 ]; then
+                err "input limit reached."
+                exit 1
+            fi
+        fi
+
         local guest_exec_arguments
-        guest_exec_arguments=`echo {} | jq -rnc --argjson capture_output "${capture_output}" --arg "path" "${program}" '.path = $path | .arg = $ARGS.positional | .["capture-output"] = $capture_output' --args -- "$@"` || exit 1
+        guest_exec_arguments=`
+            echo {} | jq -rnc \
+                --argjson capture_output "${capture_output}" \
+                --arg "path" "${program}" \
+                --arg "input_data" "${input_data}" \
+                '.path = $path
+                 | .arg = $ARGS.positional
+                 | .["capture-output"] = $capture_output
+                 | if $input_data != "" then .["input-data"] = $input_data else . end' \
+                --args -- "$@"` \
+        || exit 1
 
         local reply
         reply=`send_request "{\"execute\": \"guest-exec\", \"arguments\": ${guest_exec_arguments}}"` || exit $?
@@ -251,6 +287,7 @@ warn()
 
 _send_request()
 {
+    local nline=0
     local request
 
     {
@@ -259,6 +296,12 @@ _send_request()
         done
     } | timeout "${TIMEOUT}" nc -U "${SOCKET}" | while IFS= read -r _line; do
         printf "%s\n" "${_line}"
+
+        nline=$((nline+1))
+
+        if [ ${nline} -ge 2 ]; then
+            break
+        fi
     done
 }
 
@@ -315,9 +358,9 @@ send_request()
 usage()
 {
     cat << EOF
-usage: qga-guest-exec [-q] [-w <wait>] <socket> <program> [<args> ...]
-       qga-guest-exec [-q] -a <socket> <program> [<args> ...]
-       qga-guest-exec [-w <wait>] -p <pid> <socket>
+usage: qga-guest-exec [-iq] [-t <timeout>] [-w <wait>] <socket> <program> [<args> ...]
+       qga-guest-exec [-iq] [-t <timeout>] -a <socket> <program> [<args> ...]
+       qga-guest-exec [-t <timeout>] [-w <wait>] -p <pid> <socket>
        qga-guest-exec -v
 EOF
 }
